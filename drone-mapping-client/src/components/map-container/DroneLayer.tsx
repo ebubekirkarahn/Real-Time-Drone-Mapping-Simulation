@@ -96,8 +96,6 @@ const DroneLayer: React.FC<DroneLayerProps> = ({ tiles, titilerUrl }) => {
         'EPSG:3857'   // Target: Web Mercator
       );
       
-      console.log(`Adding tile ${tile.id}:`, { bbox: tile.bbox, correctedBbox: [tile.bbox[1], tile.bbox[0], tile.bbox[3], tile.bbox[2]], extent });
-      
       /**
        * Construct TiTiler preview URL
        * 

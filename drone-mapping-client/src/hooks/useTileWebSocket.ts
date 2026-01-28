@@ -128,8 +128,6 @@ export const useTileWebSocket = () => {
     const centerLon = (tile.bbox[1] + tile.bbox[3]) / 2;
     const centerLat = (tile.bbox[0] + tile.bbox[2]) / 2;
 
-    console.log(`Drone flying to tile ${tile.id} at [${centerLon}, ${centerLat}]`);
-
     // Step 1: Move drone to tile position and start scanning animation
     setDroneState({
       position: { lon: centerLon, lat: centerLat },
@@ -139,8 +137,6 @@ export const useTileWebSocket = () => {
 
     // Step 2: After scanning duration, complete the tile
     setTimeout(() => {
-      console.log(`Scanning complete for tile ${tile.id}, adding to map`);
-      
       // Add tile to visible tiles (triggers layer creation in DroneLayer)
       setVisibleTiles(prev => {
         const newMap = new Map(prev);
@@ -187,7 +183,6 @@ export const useTileWebSocket = () => {
      * Connection opened handler
      */
     ws.onopen = () => {
-      console.log('WebSocket connected');
       setIsConnected(true);
     };
 
@@ -265,7 +260,6 @@ export const useTileWebSocket = () => {
      * Implements automatic reconnection after 2 seconds
      */
     ws.onclose = () => {
-      console.log('WebSocket disconnected');
       setIsConnected(false);
       // Attempt reconnection after 2 seconds
       reconnectTimeoutRef.current = setTimeout(() => connect(), 2000);
