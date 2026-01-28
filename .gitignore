@@ -8,3 +8,5 @@ __pycache__/
 *.py[cod]
 main.tif
 SOLUTION.pdf
+tileserver_volume/*
+!tileserver_volume/.gitkeep
