@@ -1,0 +1,10 @@
+node_modules
+yarn.lock
+yarn-error.log
+package-lock.json
+.idea
+logs/*
+__pycache__/
+*.py[cod]
+main.tif
+SOLUTION.pdf

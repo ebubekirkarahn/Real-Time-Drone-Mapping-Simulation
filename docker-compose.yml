@@ -1,0 +1,238 @@
+# =============================================================================
+# Real-Time Drone Mapping Simulation - Docker Compose Configuration
+# =============================================================================
+#
+# This file orchestrates 4 microservices that work together to simulate
+# a drone capturing imagery and displaying it on a real-time map.
+#
+# Architecture Overview:
+# ┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
+# │   copy-tiles    │────>│  tileserver_volume   │<────│     titiler     │
+# │ (Drone Simulator│     │   (Shared Volume)    │     │  (Tile Server)  │
+# └─────────────────┘     └──────────────────────┘     └─────────────────┘
+#                                   │
+#                                   ▼
+#                         ┌──────────────────────┐     ┌─────────────────┐
+#                         │ notification-service │────>│   web-client    │
+#                         │   (File Watcher)     │     │  (React + OL)   │
+#                         └──────────────────────┘     └─────────────────┘
+#
+# Data Flow:
+# 1. copy-tiles writes GeoTIFF + JSON files to tileserver_volume
+# 2. notification-service detects new files and broadcasts via WebSocket
+# 3. web-client receives notification and requests tiles from titiler
+# 4. titiler serves the GeoTIFF as XYZ map tiles
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # DRONE SIMULATOR SERVICE
+  # ===========================================================================
+  # Simulates a drone flying over terrain and generating orthophoto tiles.
+  # Copies pre-split tiles from tiff_source to tileserver_volume with a delay
+  # to simulate real-time tile generation during drone flight.
+  # ===========================================================================
+  copy-tiles:
+    # Build from local Dockerfile (uses Python with copy_tiles.py script)
+    build: .
+    
+    volumes:
+      # Source tiles (read-only) - pre-split GeoTIFF tiles
+      - ./tiff_source:/data/source:ro
+      # Destination volume - where tiles are written for tile server
+      - ./tileserver_volume:/data/dest
+    
+    environment:
+      # Ensure Python output is not buffered (for real-time logging)
+      - PYTHONUNBUFFERED=1
+    
+    # Command arguments passed to copy_tiles.py
+    command:
+      - /data/source    # Source directory
+      - /data/dest      # Destination directory
+    
+    # Wait for dependent services to be ready
+    depends_on:
+      - titiler
+      - notification-service
+
+  # ===========================================================================
+  # TITILER - DYNAMIC TILE SERVER
+  # ===========================================================================
+  # TiTiler is a high-performance, dynamic tile server for Cloud Optimized 
+  # GeoTIFFs (COGs). 
+  
+  # It serves GeoTIFF files as standard XYZ map tiles
+  # without requiring pre-rendering.
+  #
+  # Why TiTiler?
+  # - Dynamic tile generation on-demand
+  # - Native COG support for efficient partial reads
+  # - Standards-compliant XYZ tile endpoints
+  # - No preprocessing required
+  # - GDAL-based with optimized caching
+  #
+  # API Endpoints Used:
+  # - /cog/tiles/{z}/{x}/{y} - XYZ tile endpoint
+  # - /cog/preview.png - Full tile preview
+  # - /cog/tilejson.json - TileJSON specification
+  # - /healthz - Health check endpoint
+  # ===========================================================================
+  titiler:
+    # Official TiTiler Docker image from GitHub Container Registry
+    image: ghcr.io/developmentseed/titiler:0.18.5
+    
+    ports:
+      # Expose tile server on port 8000
+      # Browser accesses: http://localhost:8000/cog/tiles/{z}/{x}/{y}
+      - "8000:8000"
+    
+    volumes:
+      # Mount tiles directory as read-only
+      # TiTiler accesses files via /data/tile_X_Y.tif
+      - ./tileserver_volume:/data:ro
+    
+    environment:
+      # -----------------------------------------------------------------------
+      # SERVER CONFIGURATION
+      # -----------------------------------------------------------------------
+      # Bind to all interfaces (required for Docker container access)
+      - HOST=0.0.0.0
+      # Server port (matches exposed port)
+      - PORT=8000
+      
+      # -----------------------------------------------------------------------
+      # WORKER CONFIGURATION
+      # -----------------------------------------------------------------------
+      # Number of worker processes per CPU core
+      - WORKERS_PER_CORE=1
+      # Maximum number of worker processes
+      - MAX_WORKERS=4
+      # Total concurrent workers (overrides WORKERS_PER_CORE)
+      - WEB_CONCURRENCY=1
+      
+      # -----------------------------------------------------------------------
+      # GDAL OPTIMIZATION
+      # -----------------------------------------------------------------------
+      # GDAL cache size in MB (for decoded raster data)
+      - GDAL_CACHEMAX=200
+      # Disable directory listing for faster file access
+      # EMPTY_DIR means don't try to list directory contents
+      - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+      # Merge consecutive HTTP range requests for efficiency
+      - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+      # Enable HTTP/2 multiplexing for parallel requests
+      - GDAL_HTTP_MULTIPLEX=YES
+      # Use HTTP/2 protocol
+      - GDAL_HTTP_VERSION=2
+      
+      # -----------------------------------------------------------------------
+      # VSI (Virtual System Interface) CACHE
+      # -----------------------------------------------------------------------
+      # Enable VSI caching for remote file access
+      - VSI_CACHE=TRUE
+      # VSI cache size in bytes (5MB)
+      - VSI_CACHE_SIZE=5000000
+      # Only allow specific file extensions
+      - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.TIF,.tiff
+    
+    # Health check configuration
+    healthcheck:
+      # Check TiTiler health endpoint
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      # Check every 10 seconds
+      interval: 10s
+      # Timeout after 5 seconds
+      timeout: 5s
+      # Mark unhealthy after 3 consecutive failures
+      retries: 3
+
+  # ===========================================================================
+  # NOTIFICATION SERVICE
+  # ===========================================================================
+  # Node.js service that watches for new tiles and broadcasts updates to
+  # connected web clients via WebSocket.
+  #
+  # Key Features:
+  # - File watching with chokidar
+  # - WebSocket server for real-time updates
+  # - REST API for tile metadata
+  # - Automatic tile URL generation for TiTiler
+  #
+  # Why custom service instead of alternatives?
+  # - Lightweight and purpose-built
+  # - Direct control over notification format
+  # - Easy integration with TiTiler URLs
+  # - WebSocket for low-latency updates
+  # ===========================================================================
+  notification-service:
+    # Build from local Dockerfile in notification-service directory
+    build: ./notification-service
+    
+    ports:
+      # Expose WebSocket/REST API on port 3001
+      # WebSocket: ws://localhost:3001
+      # REST API: http://localhost:3001/api/tiles
+      - "3001:3001"
+    
+    volumes:
+      # Mount tiles directory as read-only for file watching
+      - ./tileserver_volume:/data/tiles:ro
+    
+    environment:
+      # Server port
+      - PORT=3001
+      # Directory to watch for new tile files
+      - TILES_DIR=/data/tiles
+      # Internal Docker network URL for TiTiler
+      # (used for server-side API calls if needed)
+      - TITILER_URL=http://titiler:8000
+      # Public URL sent to browsers
+      # (browsers access TiTiler directly, not through Docker network)
+      - TITILER_PUBLIC_URL=http://localhost:8000
+    
+    # Wait for TiTiler to be ready
+    depends_on:
+      - titiler
+    
+    # Health check configuration
+    healthcheck:
+      # Check health endpoint with wget (Alpine Linux)
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ===========================================================================
+  # WEB CLIENT
+  # ===========================================================================
+  # React + OpenLayers web application that displays the drone mapping
+  # progress in real-time.
+  #
+  # Features:
+  # - OpenLayers map with OSM basemap
+  # - Real-time tile updates via WebSocket
+  # - Animated drone icon showing current position
+  # - Status panel with connection info and progress
+  #
+  # Technology Stack:
+  # - Vite (build tool)
+  # - React 18 (UI framework)
+  # - TypeScript (type safety)
+  # - OpenLayers 9 (mapping library)
+  # - NGINX (production server)
+  # ===========================================================================
+  web-client:
+    # Build from local Dockerfile in drone-mapping-client directory
+    build: ./drone-mapping-client
+    
+    ports:
+      # Serve on port 3000 (NGINX serves static files on port 80 inside container)
+      # Access: http://localhost:3000
+      - "3000:80"
+    
+    # Wait for backend services to be ready
+    depends_on:
+      - titiler
+      - notification-service
