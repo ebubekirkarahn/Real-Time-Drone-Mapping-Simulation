@@ -28,8 +28,8 @@ export default [
     rules: {
       /* TypeScript */
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-      '@typescript-eslint/no-non-null-assertion': 'error',
-      '@typescript-eslint/ban-ts-comment': ['error', { 'ts-ignore': 'allow-with-description' }],
+      '@typescript-eslint/no-non-null-assertion': 'error', //variable! kullanımı yasak. Null güvenliği için
+      '@typescript-eslint/ban-ts-comment': ['error', { 'ts-ignore': 'allow-with-description' }],  // @ts-ignore: reason
       '@typescript-eslint/consistent-type-imports': 'warn',
 
       /* React */
