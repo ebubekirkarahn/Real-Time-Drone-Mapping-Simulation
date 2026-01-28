@@ -1,19 +1,20 @@
 /**
  * @fileoverview DroneLayer component for rendering GeoTIFF tiles on the map
  * 
- * This component manages OpenLayers ImageLayer instances for each tile received
+ * This component manages OpenLayers TileLayer instances for each tile received
  * from the drone simulation. It handles:
  * - Dynamic layer creation for new tiles
  * - Coordinate transformation (EPSG:4326 → EPSG:3857)
  * - Fade-in animation for visual appeal
  * - Efficient incremental updates (only processes new tiles)
+ * - **Zoom-dependent detail loading via XYZ tiles**
  * 
  * @module components/map-container/DroneLayer
  */
 
 import { useContext, useEffect, useRef } from 'react';
-import ImageLayer from 'ol/layer/Image';
-import ImageStatic from 'ol/source/ImageStatic';
+import TileLayer from 'ol/layer/Tile';
+import XYZ from 'ol/source/XYZ';
 import { transformExtent } from 'ol/proj';
 import { MapContext } from '@/components/map-container/map/MapContext';
 import type { TileMetadata } from '@/types/tile';
@@ -32,7 +33,7 @@ interface DroneLayerProps {
 /**
  * DroneLayer - Renders GeoTIFF tiles from drone scanning on OpenLayers map
  * 
- * This component creates ImageLayer instances for each tile and positions them
+ * This component creates TileLayer instances for each tile and positions them
  * correctly using the tile's bounding box coordinates. Key features:
  * 
  * 1. **Incremental Processing**: Only processes newly added tiles using
@@ -41,8 +42,8 @@ interface DroneLayerProps {
  * 2. **Coordinate Transformation**: Converts bbox from EPSG:4326 (lat/lon)
  *    to EPSG:3857 (Web Mercator) for OpenLayers display
  * 
- * 3. **TiTiler Integration**: Constructs preview URLs using TiTiler's
- *    COG (Cloud Optimized GeoTIFF) endpoint
+ * 3. **TiTiler XYZ Integration**: Uses TiTiler's /cog/tiles/{z}/{x}/{y}
+ *    endpoint for zoom-dependent detail loading from COG files
  * 
  * 4. **Fade-in Animation**: New tiles appear with smooth opacity transition
  * 
@@ -61,7 +62,7 @@ const DroneLayer: React.FC<DroneLayerProps> = ({ tiles, titilerUrl }) => {
   const map = useContext(MapContext);
   
   // Map to track created layers by tile ID (prevents duplicates)
-  const layersRef = useRef<Map<string, ImageLayer<ImageStatic>>>(new Map());
+  const layersRef = useRef<Map<string, TileLayer<XYZ>>>(new Map());
   
   // Track how many tiles have been processed (for incremental updates)
   const processedCountRef = useRef<number>(0);
@@ -97,35 +98,43 @@ const DroneLayer: React.FC<DroneLayerProps> = ({ tiles, titilerUrl }) => {
       );
       
       /**
-       * Construct TiTiler preview URL
+       * Construct TiTiler XYZ tile URL
        * 
-       * TiTiler's /cog/preview endpoint generates a PNG preview of the GeoTIFF
+       * TiTiler's /cog/tiles/{z}/{x}/{y} endpoint generates tiles dynamically
+       * based on zoom level, providing appropriate detail for each zoom.
        * Parameters:
        * - url: Path to the GeoTIFF file (mounted in /data volume)
-       * - width/height: Output image dimensions
+       * - {z}/{x}/{y}: Standard XYZ tile coordinates (filled by OpenLayers)
        */
-      const previewUrl = `${titilerUrl}/cog/preview.png?url=/data/${tile.filename}&width=${tile.width}&height=${tile.height}`;
+      const xyzUrl = `${titilerUrl}/cog/tiles/{z}/{x}/{y}?url=/data/${tile.filename}`;
       
       /**
-       * Create OpenLayers ImageLayer with static image source
+       * Create OpenLayers TileLayer with XYZ source
        * 
-       * - imageExtent: Positions the image at correct geographic coordinates
+       * - extent: Limits tile requests to this GeoTIFF's geographic bounds
+       * - minZoom/maxZoom: Controls zoom range for tile requests
        * - opacity: 0 initially for fade-in animation
        * - zIndex: Ensures proper layer ordering (row/col based)
+       * 
+       * Unlike ImageStatic, XYZ source requests new tiles when zoom changes,
+       * allowing TiTiler to serve appropriate detail level from the COG.
        */
-      const imageLayer = new ImageLayer({
-        source: new ImageStatic({
-          url: previewUrl,
-          imageExtent: extent,
-          crossOrigin: 'anonymous'  // Required for CORS
+      const tileLayer = new TileLayer({
+        extent: extent,  // Only load tiles within this drone tile's bounds
+        source: new XYZ({
+          url: xyzUrl,
+          crossOrigin: 'anonymous',
+          minZoom: 0,
+          maxZoom: 18,
+          tileSize: 256
         }),
         opacity: 0,
         zIndex: 10 + tile.row * 10 + tile.col  // Deterministic z-order
       });
 
       // Add layer to map
-      map.addLayer(imageLayer);
-      layersRef.current.set(tile.id, imageLayer);
+      map.addLayer(tileLayer);
+      layersRef.current.set(tile.id, tileLayer);
 
       /**
        * Fade-in animation
@@ -140,7 +149,7 @@ const DroneLayer: React.FC<DroneLayerProps> = ({ tiles, titilerUrl }) => {
           opacity = 1.0;
           clearInterval(fadeIn);
         }
-        imageLayer.setOpacity(opacity);
+        tileLayer.setOpacity(opacity);
       }, 50);
     });
     
